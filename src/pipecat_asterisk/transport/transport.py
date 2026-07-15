@@ -139,6 +139,10 @@ class AsteriskWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
         The method overrides parent class method. Effectively the audio frame is passed to the flow controller
         instead of writing them directly to the websocket. Formally, this method doesn't write audio frames as the name suggests.
 
+        Paces every path with ``_write_audio_sleep()`` (like the parent), so
+        ``TTSStoppedFrame`` and bot-speaking state track real playback instead of
+        firing at generation speed.
+
         Args:
             frame: The output audio frame to write.
 
@@ -150,18 +154,21 @@ class AsteriskWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
             logger.warning(
                 f"Cannot write audio frame because the WebSocket client is closing or already closed."
             )
+            await self._write_audio_sleep()
             return False
 
         if not self._params.serializer:
             logger.error(
                 f"Serializer is not set in transport parameters. Cannot write audio frame."
             )
+            await self._write_audio_sleep()
             return False
 
         if self._flow_controller is None:
-            logger.error(
-                f"Flow controller is not initialized. Cannot write audio frame."
-            )
+            # Mixer frames can arrive before MEDIA_START inits the flow controller;
+            # stay paced and drop quietly instead of erroring per frame.
+            logger.trace("Flow controller not initialized yet; dropping audio frame.")
+            await self._write_audio_sleep()
             return False
 
         frame = OutputAudioRawFrame(
@@ -175,19 +182,23 @@ class AsteriskWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
             if payload:
                 if type(payload) == bytes:
                     self._flow_controller(payload)
+                    await self._write_audio_sleep()
                     return True
                 else:
                     logger.error(
                         f"Serialized audio frame is not bytes. Got {type(payload)} instead. Cannot write audio frame."
                     )
+                    await self._write_audio_sleep()
                     return False
             else:
                 logger.trace(
                     f"Serializer returned None or empty payload. Cannot write audio frame."
                 )
+                await self._write_audio_sleep()
                 return False
         except Exception as e:
             logger.error(f"{self} exception sending data: {e.__class__.__name__} ({e})")
+            await self._write_audio_sleep()
             return False
 
 
